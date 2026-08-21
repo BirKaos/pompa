@@ -193,12 +193,12 @@ def admin_callbacks(call):
         if os.path.exists(dosya_yolu):
             os.remove(dosya_yolu)
             
-            # Kullanıcının aktif bot listesinden de kaldıralım
             for uid, botlar in kullanici_bot_sayisi.items():
                 if dosya_adi in botlar:
                     botlar.remove(dosya_adi)
                     try:
-                        bot.send_message(uid, f"⚠️ Yönetici tarafından `{dosya_adi` adlı botun sistemden silindi.")
+                        # BURASI DÜZELTİLDİ ({dosya_adi} -> süslü parantez kapatıldı)
+                        bot.send_message(uid, f"⚠️ Yönetici tarafından `{dosya_adi}` adlı botun sistemden silindi.")
                     except:
                         pass
                     break
@@ -338,7 +338,7 @@ def callback_query(call):
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             caption=f"❌ **REDDEDİLDİ**\n📄 Dosya: `{dosya_adi}`",
-                parse_mode="Markdown"
+            parse_mode="Markdown"
         )
         
         if dosya_adi in dosya_sahipleri:
@@ -348,3 +348,4 @@ def callback_query(call):
 if __name__ == "__main__":
     print("Lanet Robot Botu kanal zorunluluğu ile aktif ve çalışıyor...")
     bot.infinity_polling()
+        
