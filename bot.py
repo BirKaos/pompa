@@ -6,7 +6,7 @@ import re
 from urllib.parse import quote
 import io
 
-TOKEN = ""
+TOKEN = "8685751277:AAFiz53DXjlHrI6Ay2oUZnfW8ZdDpPnrrQo"
 KANAL_ID = "@lanetrbot"
 ADMIN_ID = 8770418133
 
