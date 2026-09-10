@@ -5,6 +5,9 @@ import json
 import re
 from urllib.parse import quote
 import io
+from flask import Flask, jsonify, render_template_string
+import threading
+import datetime
 
 TOKEN = "8968096720:AAGg7QCldEKlV6liYMf7HmvFMq1Ekjh888Q"
 KANAL_ID = "@freedosya"
@@ -13,6 +16,91 @@ ADMIN_ID = 8770418133
 bot = telebot.TeleBot(TOKEN)
 kullanici_verileri = {}
 engellenenler = set()
+
+# Anlık logların tutulduğu liste
+canli_loglar = []
+
+# --- FLASK WEB SUNUCUSU (CANLI LOG PANELİ) ---
+app = Flask(__name__)
+
+HTML_SAYFASI = """
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Telegram Bot Canlı Log Ekranı</title>
+    <style>
+        body { background: #0b0f19; color: #00ffcc; font-family: monospace; padding: 20px; }
+        .header { border-bottom: 2px solid #1f293d; padding-bottom: 15px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        h1 { color: #fff; margin: 0; font-size: 22px; }
+        .status { font-size: 14px; color: #10b981; background: rgba(16, 185, 129, 0.1); padding: 5px 10px; border-radius: 4px; border: 1px solid rgba(16, 185, 129, 0.3); }
+        .card { background: #111827; border: 1px solid #1f2937; border-left: 4px solid #3b82f6; padding: 15px; margin-bottom: 15px; border-radius: 6px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3); }
+        .header-info { color: #9ca3af; font-size: 13px; border-bottom: 1px solid #1f2937; padding-bottom: 8px; margin-bottom: 10px; display: flex; justify-content: space-between; }
+        .user { color: #f43f5e; font-weight: bold; }
+        .zaman { color: #fbbf24; }
+        pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; color: #34d399; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 Telegram Bot Canlı Sorgu Paneli</h1>
+        <div class="status">● Canlı Akış Aktif</div>
+    </div>
+    <div id="log-alani">Loglar yükleniyor...</div>
+
+    <script>
+        async function loglariGetir() {
+            try {
+                let res = await fetch('/api/loglar');
+                let veri = await res.json();
+                let alan = document.getElementById('log-alani');
+                
+                if (veri.length === 0) {
+                    alan.innerHTML = "<p>Henüz bir sorgu yapılmadı...</p>";
+                    return;
+                }
+
+                let html = "";
+                veri.reverse().forEach(item => {
+                    html += `
+                        <div class="card">
+                            <div class="header-info">
+                                <span>SORGULAYAN: <span class="user">@${item.yapan}</span></span>
+                                <span class="zaman">${item.zaman}</span>
+                            </div>
+                            <pre>├─ İŞLEM: ${item.islem.toUpperCase()}
+├─ ARANAN: ${item.aranan}
+${item.sonuc}
+└─ VERSION: 4.0</pre>
+                        </div>
+                    `;
+                });
+                alan.innerHTML = html;
+            } catch (e) {
+                console.log("Log çekme hatası:", e);
+            }
+        }
+
+        setInterval(loglariGetir, 2000);
+        loglariGetir();
+    </script>
+</body>
+</html>
+"""
+
+@app.route('/')
+def anasayfa():
+    return render_template_string(HTML_SAYFASI)
+
+@app.route('/api/loglar')
+def api_loglar():
+    return jsonify(canli_loglar)
+
+def web_sunucuyu_baslat():
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+
+# --- TELEGRAM BOT MANTIĞI ---
 
 def kullanici_kanalda_mi(user_id):
     if user_id == ADMIN_ID:
@@ -316,11 +404,9 @@ def soyad_girildi_islem(message):
     except: pass
 
     veri = kullanici_verileri.get(user_id, {})
-    ad = quote(veri.get("ad", ""))
-    soyad_en = quote(soyad)
-    
-    url = f"https://apiv2.ajaxsystems.fun/adsoyad.php?ad={ad}&soyad={soyad_en}"
-    api_sorgu_calistir(chat_id, url, user_id)
+    ad = veri.get("ad", "")
+    url = f"https://apiv2.ajaxsystems.fun/adsoyad.php?ad={quote(ad)}&soyad={quote(soyad)}"
+    api_sorgu_calistir(chat_id, url, user_id, "adsoyad", f"{ad} {soyad}")
 
 def adaparsel_il_girildi(message):
     if message.text and message.text.startswith("/"): return
@@ -353,11 +439,9 @@ def adaparsel_ilce_girildi(message):
     except: pass
 
     veri = kullanici_verileri.get(user_id, {})
-    il = quote(veri.get("il", ""))
-    ilce_en = quote(ilce)
-    
-    url = f"https://apiv2.ajaxsystems.fun/adaparsel.php?il={il}&ilce={ilce_en}"
-    api_sorgu_calistir(chat_id, url, user_id)
+    il = veri.get("il", "")
+    url = f"https://apiv2.ajaxsystems.fun/adaparsel.php?il={quote(il)}&ilce={quote(ilce)}"
+    api_sorgu_calistir(chat_id, url, user_id, "adaparsel", f"İl: {il}, İlçe: {ilce}")
 
 def tekli_parametre_sorgula(message):
     if message.text and message.text.startswith("/"): return
@@ -388,9 +472,9 @@ def tekli_parametre_sorgula(message):
 
     url = urls.get(islem)
     if not url: return
-    api_sorgu_calistir(chat_id, url, user_id)
+    api_sorgu_calistir(chat_id, url, user_id, islem, param)
 
-def api_sorgu_calistir(chat_id, url, user_id):
+def api_sorgu_calistir(chat_id, url, user_id, islem_adi, aranan_deger):
     msg_id = kullanici_verileri.get(user_id, {}).get("aktif_mesaj_id")
     
     if msg_id:
@@ -406,7 +490,6 @@ def api_sorgu_calistir(chat_id, url, user_id):
                 gercek_veriler = []
                 
                 if isinstance(jdata, dict):
-                    # API yanıtındaki iç nesneleri yakalama
                     if "data" in jdata and jdata["data"]:
                         res = jdata["data"]
                     elif "results" in jdata and jdata["results"]:
@@ -434,11 +517,11 @@ def api_sorgu_calistir(chat_id, url, user_id):
                 return
             
             formatted_results = []
-            for kayit in gercek_veriler:
+            ilk_metin_log = ""
+            for idx, kayit in enumerate(gercek_veriler):
                 if isinstance(kayit, dict):
                     metin = ""
                     for k, v in kayit.items():
-                        # Sadece sistem/durum başlıklarını gizliyoruz
                         if k.lower() in ["status", "success", "developer", "version", "message"]: 
                             continue
                         
@@ -454,8 +537,13 @@ def api_sorgu_calistir(chat_id, url, user_id):
                     if metin.strip():
                         metin += "├─ DEVELOPER: @lanetliymis\n└─ VERSION: 4.0"
                         formatted_results.append(metin.strip())
+                        if idx == 0:
+                            ilk_metin_log = metin.strip()
                 else:
-                    formatted_results.append(f"├─ SONUÇ: {str(kayit)}\n├─ DEVELOPER: @lanetliymis\n└─ VERSION: 4.0")
+                    res_str = f"├─ SONUÇ: {str(kayit)}\n├─ DEVELOPER: @lanetliymis\n└─ VERSION: 4.0"
+                    formatted_results.append(res_str)
+                    if idx == 0:
+                        ilk_metin_log = res_str
             
             if not formatted_results:
                 markup = types.InlineKeyboardMarkup()
@@ -467,6 +555,23 @@ def api_sorgu_calistir(chat_id, url, user_id):
             kullanici_verileri[user_id]["aktif_sayfa"] = 0
             
             sonuclari_goster(chat_id, msg_id, user_id)
+
+            # Kullanıcı adını al
+            try:
+                chat_info = bot.get_chat(user_id)
+                username = chat_info.username or chat_info.first_name or str(user_id)
+            except:
+                username = str(user_id)
+
+            # FLASK WEB PANELİNE LOGU EKLE
+            zaman_str = datetime.datetime.now().strftime("%H:%M:%S")
+            canli_loglar.append({
+                "yapan": username,
+                "islem": islem_adi,
+                "aranan": aranan_deger,
+                "sonuc": ilk_metin_log,
+                "zaman": zaman_str
+            })
             
         else:
             markup = types.InlineKeyboardMarkup()
@@ -477,5 +582,10 @@ def api_sorgu_calistir(chat_id, url, user_id):
         markup.add(types.InlineKeyboardButton("🔙 Ana Menüye Dön", callback_data="iptal"))
         if msg_id: bot.edit_message_text(f"⚠️ Bağlantı Hatası: {e}", chat_id, msg_id, reply_markup=markup)
 
-print("Panel botu aktif ve çalışıyor...")
-bot.infinity_polling()
+if __name__ == "__main__":
+    # Web sunucusunu arka planda başlat
+    t = threading.Thread(target=web_sunucuyu_baslat)
+    t.daemon = True
+    t.start()
+    print("🚀 Panel botu ve Canlı Web Log sunucusu aktif! http://localhost:5000 adresinden izleyebilirsin.")
+    bot.infinity_polling()
