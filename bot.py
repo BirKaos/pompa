@@ -1,387 +1,481 @@
-import os
-import random
 import telebot
-from telebot.types import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    MessageEntity,
-)
+from telebot import types
+import requests
+import json
+import re
+from urllib.parse import quote
+import io
 
-# Bot Token ve Admin ID
-TOKEN = "8668738139:AAFAjyGvCHHuhRPJJVFilnmuo6h-MiD46Z8"
+TOKEN = "8968096720:AAGg7QCldEKlV6liYMf7HmvFMq1Ekjh888Q"
+KANAL_ID = "@freedosya"
 ADMIN_ID = 8770418133
-CHANNEL_USERNAME = "@freedosya"
 
 bot = telebot.TeleBot(TOKEN)
+kullanici_verileri = {}
+engellenenler = set()
 
-# Veritabanı Hafızası
-user_orders = {}
-user_balances = {}
-
-# Senden gelen özel emoji ID tanımları
-CUSTOM_EMOJIS = {
-    "🎁": "5917820826232560322",
-    "⭐": "5985827110764158062",
-    "👤": "5920326316879517449",
-    "💡": "5917882875625084524",
-    "💎": "5917954451255072374",
-    "✈️": "5985748293819307278",
-}
-
-
-def build_entities(text):
-  entities = []
-  text_utf16 = text.encode("utf-16-le")
-
-  for char, eid in CUSTOM_EMOJIS.items():
-    char_utf16 = char.encode("utf-16-le")
-    pos = 0
-    while True:
-      idx = text_utf16.find(char_utf16, pos)
-      if idx == -1:
-        break
-      offset_utf16 = idx // 2
-      length_utf16 = len(char_utf16) // 2
-
-      entities.append(
-          MessageEntity(
-              type="custom_emoji",
-              offset=offset_utf16,
-              length=length_utf16,
-              custom_emoji_id=eid,
-          )
-      )
-      pos = idx + len(char_utf16)
-  return entities
-
-
-def send_or_edit_msg(call_or_message, text, reply_markup=None):
-  ents = build_entities(text)
-  chat_id = (
-      call_or_message.message.chat.id
-      if hasattr(call_or_message, "message")
-      else call_or_message.chat.id
-  )
-
-  if hasattr(call_or_message, "message"):
+def kullanici_kanalda_mi(user_id):
+    if user_id == ADMIN_ID:
+        return True
     try:
-      return bot.edit_message_text(
-          text,
-          chat_id,
-          call_or_message.message.message_id,
-          entities=ents,
-          reply_markup=reply_markup,
-      )
-    except Exception:
-      return bot.send_message(
-          chat_id, text, entities=ents, reply_markup=reply_markup
-      )
-  else:
-    return bot.send_message(
-        chat_id, text, entities=ents, reply_markup=reply_markup
-    )
+        uye = bot.get_chat_member(KANAL_ID, user_id)
+        durum = uye.status
+        if durum in ["member", "administrator", "creator"]:
+            return True
+        return False
+    except Exception as e:
+        print(f"Kanal kontrol hatası ({user_id}): {e}")
+        return False
 
+def kanal_kontrol_mesaji(chat_id, message_id=None):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    kanal_buton = types.InlineKeyboardButton("📢 Kanal", url="https://t.me/freedosya")
+    kontrol_buton = types.InlineKeyboardButton("✅ Katıldım", callback_data="kontrol_et")
+    markup.add(kanal_buton, kontrol_buton)
+    
+    text = "SORGULARI KULLANABİLMENİZ İÇİN AŞAĞIDAKİ KANALLARA KATILMANIZ LAZIM"
+    if message_id:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
+            return
+        except:
+            pass
+    bot.send_message(chat_id, text, reply_markup=markup)
 
-def check_membership(user_id):
-  try:
-    member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-    return member.status in ["member", "creator", "administrator"]
-  except Exception:
-    return False
-
-
-@bot.message_handler(commands=["start"])
-def send_welcome(message):
-  user_id = message.from_user.id
-  if not check_membership(user_id):
-    markup = InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        InlineKeyboardButton(
-            "📢 Kanalımıza Katıl", url=f"https://t.me/{CHANNEL_USERNAME[1:]}"
-        )
-    )
-    markup.add(
-        InlineKeyboardButton(
-            "✅ Katıldım, Kontrol Et", callback_data="check_sub"
-        )
-    )
-    send_or_edit_msg(
-        message,
-        "⚠️ **Kanal Zorunluluğu!**\nBotu kullanabilmek için kanalımıza katılmalısınız.",
-        reply_markup=markup,
-    )
-    return
-  show_main_menu(message)
-
-
-def show_main_menu(call_or_message):
-  markup = InlineKeyboardMarkup(row_width=1)
-  markup.add(
-      InlineKeyboardButton(
-          "Brawl Stars Ürünleri", callback_data="cat_bs"
-      )
-  )
-  markup.add(
-      InlineKeyboardButton(
-          "Telegram Üye Basma", callback_data="cat_tg"
-      )
-  )
-  markup.add(
-      InlineKeyboardButton(
-          "Discord Hesap & Boost", callback_data="cat_dc"
-      )
-  )
-  markup.add(
-      InlineKeyboardButton(
-          "Gmail Hesap Hizmetleri", callback_data="cat_gmail"
-      )
-  )
-  markup.add(
-      InlineKeyboardButton(
-          "Cüzdan / Bakiyem", callback_data="check_balance"
-      )
-  )
-
-  text = "👤 Ana Menü\n\nAşağıdaki butonlardan birini seç: 🎁"
-  send_or_edit_msg(call_or_message, text, reply_markup=markup)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "check_sub")
-def callback_check_sub(call):
-  if check_membership(call.from_user.id):
-    bot.answer_callback_query(call.id, "✅ Kanal kontrolü başarılı!")
-    show_main_menu(call)
-  else:
-    bot.answer_callback_query(
-        call.id, "❌ Hala kanala katılmadın!", show_alert=True
-    )
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "check_balance")
-def callback_check_balance(call):
-  user_id = call.from_user.id
-  balance = user_balances.get(user_id, 0.0)
-
-  markup = InlineKeyboardMarkup(row_width=1)
-  markup.add(
-      InlineKeyboardButton("🏠 Ana Menüye Dön", callback_data="main_menu")
-  )
-
-  text = f"⭐ Hesap Bakiyeniz\n\nGüncel Bakiyeniz: {balance} TL 🎁"
-  send_or_edit_msg(call, text, reply_markup=markup)
-
-
-@bot.message_handler(commands=["para"])
-def add_money_command(message):
-  if message.from_user.id != ADMIN_ID:
-    bot.reply_to(message, "❌ Bu komutu sadece admin kullanabilir!")
-    return
-
-  args = message.text.split()
-  if len(args) < 3:
-    bot.reply_to(message, "⚠️ Örnek kullanım: `/para [ID] [Miktar]`")
-    return
-
-  target = args[1]
-  try:
-    amount = float(args[2])
-  except ValueError:
-    bot.reply_to(message, "⚠️ Miktar sayı olmalıdır!")
-    return
-
-  if target.isdigit():
-    target_id = int(target)
-    user_balances[target_id] = user_balances.get(target_id, 0.0) + amount
-    bot.reply_to(
-        message,
-        f"✅ Başarılı! `{target_id}` ID'li kullanıcıya `{amount} TL` eklendi.",
-    )
-    try:
-      bot.send_message(
-          target_id,
-          f"🎉 Hesabınıza `{amount} TL` bakiye eklendi! ⭐\nGüncel Bakiye:"
-          f" `{user_balances[target_id]} TL`",
-      )
-    except Exception:
-      pass
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("cat_"))
-def callback_categories(call):
-  markup = InlineKeyboardMarkup(row_width=1)
-
-  if call.data == "cat_bs":
-    markup.add(
-        InlineKeyboardButton(
-            "Brawl Stars Random (250 TL)", callback_data="buy_bs_random"
-        )
-    )
-    markup.add(
-        InlineKeyboardButton(
-            "Brawl Stars Kesin Girişli (500 TL)",
-            callback_data="buy_bs_kesin",
-        )
-    )
-    text = "👤 Brawl Stars Ürün Kategorisi 🎁"
-
-  elif call.data == "cat_tg":
-    markup.add(
-        InlineKeyboardButton(
-            "500 Telegram Üye (100 TL)", callback_data="buy_tg_500"
-        )
-    )
-    markup.add(
-        InlineKeyboardButton(
-            "1K Telegram Üye (250 TL)", callback_data="buy_tg_1k"
-        )
-    )
-    markup.add(
-        InlineKeyboardButton(
-            "10K Telegram Üye (3.000 TL)", callback_data="buy_tg_10k"
-        )
-    )
-    text = "⭐ Telegram Üye Basma Hizmetleri 🎁"
-
-  elif call.data == "cat_dc":
-    markup.add(
-        InlineKeyboardButton(
-            "2024 Tarihli Discord (100 TL)", callback_data="buy_dc_2024"
-        )
-    )
-    markup.add(
-        InlineKeyboardButton(
-            "2017 Tarihli Discord (500 TL)", callback_data="buy_dc_2017"
-        )
-    )
-    markup.add(
-        InlineKeyboardButton(
-            "4X Boost 1 Aylık (150 TL)", callback_data="buy_dc_boost4"
-        )
-    )
-    markup.add(
-        InlineKeyboardButton(
-            "14X Boost 1 Aylık (300 TL)", callback_data="buy_dc_boost14"
-        )
-    )
-    text = "💎 Discord Hesap ve Boost Hizmetleri 🎁"
-
-  elif call.data == "cat_gmail":
-    markup.add(
-        InlineKeyboardButton(
-            "Random Gmail Hesap (50 TL)", callback_data="buy_gmail_random"
-        )
-    )
-    markup.add(
-        InlineKeyboardButton(
-            "Kesin Girişli Gmail (100 TL)", callback_data="buy_gmail_kesin"
-        )
-    )
-    text = "👤 Gmail Hesap Hizmetleri 🎁"
-
-  markup.add(
-      InlineKeyboardButton("🏠 Ana Menüye Dön", callback_data="main_menu")
-  )
-  send_or_edit_msg(call, text, reply_markup=markup)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "main_menu")
-def callback_main_menu(call):
-  show_main_menu(call)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
-def callback_buy(call):
-  data = call.data
-  user_id = call.from_user.id
-
-  # Tüm ürünlerin fiyatları ve dosya eşleşmeleri
-  product_prices = {
-      "buy_bs_random": ("bs_random.txt", "Brawl Stars Random", 250.0),
-      "buy_bs_kesin": ("bs_kesin.txt", "Brawl Stars Kesin Girişli", 500.0),
-      "buy_gmail_random": ("gmail_random.txt", "Random Gmail", 50.0),
-      "buy_gmail_kesin": ("gmail_kesin.txt", "Kesin Girişli Gmail", 100.0),
-      "buy_tg_500": (None, "Telegram 500 Üye", 100.0),
-      "buy_tg_1k": (None, "Telegram 1K Üye", 250.0),
-      "buy_tg_10k": (None, "Telegram 10K Üye", 3000.0),
-      "buy_dc_2024": (None, "2024 Tarihli Discord", 100.0),
-      "buy_dc_2017": (None, "2017 Tarihli Discord", 500.0),
-      "buy_dc_boost4": (None, "4X Boost 1 Aylık", 150.0),
-      "buy_dc_boost14": (None, "14X Boost 1 Aylık", 300.0),
-  }
-
-  if data not in product_prices:
-    return
-
-  filename, prod_name, price = product_prices[data]
-  user_balance = user_balances.get(user_id, 0.0)
-
-  # Bakiye kontrolü (Yetersizse uyarı ver)
-  if user_balance < price:
-    bot.answer_callback_query(
-        call.id,
-        f"❌ Yetersiz Bakiye! Gerekli: {price} TL, Bakiyeniz: {user_balance} TL",
-        show_alert=True,
-    )
-    return
-
-  # Eğer ürün stoklu dosya ürünüyse (Brawl Stars / Gmail)
-  if filename:
-    if os.path.exists(filename):
-      with open(filename, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-      if lines:
-        # Bakiyeden düşüş yapılıyor
-        user_balances[user_id] -= price
-
-        item = lines[0].strip()
-        with open(filename, "w", encoding="utf-8") as f:
-          f.writelines(lines[1:])
-
-        bot.answer_callback_query(call.id, "✅ Satın alım başarılı!")
-        markup = InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            InlineKeyboardButton("🏠 Ana Menüye Dön", callback_data="main_menu")
-        )
-        text = (
-            f"🎁 Ürününüz Başarıyla Teslim Edildi!\n\n"
-            f"⭐ **{prod_name}**\n"
-            f"💰 Kesilen Tutar: `{price} TL`\n"
-            f"💎 Kalan Bakiye: `{user_balances[user_id]} TL`\n\n"
-            f"Ürün Bilgisi:\n`{item}`"
-        )
-        send_or_edit_msg(call, text, reply_markup=markup)
+@bot.message_handler(commands=['admin'])
+def admin_paneli(message):
+    user_id = message.from_user.id
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Bu komutu kullanmaya yetkiniz yok.")
         return
-      else:
-        bot.answer_callback_query(
-            call.id, "❌ Bu üründe stok kalmadı!", show_alert=True
-        )
+    
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("🚫 Kullanıcı Engelle", callback_data="admin_ban"),
+        types.InlineKeyboardButton("✅ Engel Kaldır", callback_data="admin_unban"),
+        types.InlineKeyboardButton("📊 Engellenenler Listesi", callback_data="admin_list"),
+        types.InlineKeyboardButton("❌ Paneli Kapat", callback_data="iptal")
+    )
+    bot.send_message(message.chat.id, "👑 **Admin Paneline Hoş Geldiniz**\n\nLütfen bir işlem seçin:", reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
+def admin_islem(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "Yetkiniz yok!", show_alert=True)
         return
+    
+    action = call.data.split("_")[1]
+    chat_id = call.message.chat.id
+    
+    if action == "ban":
+        msg = bot.send_message(chat_id, "✏️ Engellemek istediğiniz kullanıcının **ID** numarasını veya **@kullaniciadi**nı yazın:")
+        bot.register_next_step_handler(msg, ban_uygula)
+    elif action == "unban":
+        msg = bot.send_message(chat_id, "✏️ Engelini kaldırmak istediğiniz kullanıcının **ID** numarasını veya **@kullaniciadi**nı yazın:")
+        bot.register_next_step_handler(msg, unban_uygula)
+    elif action == "list":
+        if not engellenenler:
+            bot.answer_callback_query(call.id, "Engellenen kimse yok.", show_alert=True)
+        else:
+            txt = "🚫 **Engellenen Kullanıcılar:**\n" + "\n".join([f"• `{uid}`" for uid in engellenenler])
+            bot.send_message(chat_id, txt, parse_mode="Markdown")
+
+def hedef_id_bul(girdi):
+    girdi = girdi.strip()
+    if girdi.startswith("@"):
+        try:
+            chat_info = bot.get_chat(girdi)
+            return chat_info.id
+        except:
+            return None
     else:
-      bot.answer_callback_query(
-          call.id, "❌ Stok dosyası bulunamadı!", show_alert=True
-      )
-      return
+        try:
+            return int(girdi)
+        except:
+            return None
 
-  # Stoksuz hizmetler (Discord/Telegram üye vb.) için bakiye düşme ve onay süreci
-  user_orders[user_id] = prod_name
-  user_balances[user_id] -= price  # Bakiyeden düş
+def ban_uygula(message):
+    if message.from_user.id != ADMIN_ID: return
+    uid = hedef_id_bul(message.text)
+    if uid:
+        engellenenler.add(uid)
+        bot.reply_to(message, f"✅ `{uid}` ID'li kullanıcı başarıyla engellendi.", parse_mode="Markdown")
+    else:
+        bot.reply_to(message, "❌ Geçersiz kullanıcı veya ID.")
 
-  markup = InlineKeyboardMarkup(row_width=1)
-  markup.add(
-      InlineKeyboardButton("🏠 Ana Menüye Dön", callback_data="main_menu")
-  )
+def unban_uygula(message):
+    if message.from_user.id != ADMIN_ID: return
+    uid = hedef_id_bul(message.text)
+    if uid:
+        if uid in engellenenler:
+            engellenenler.remove(uid)
+            bot.reply_to(message, f"✅ `{uid}` ID'li kullanıcının engeli kaldırıldı.", parse_mode="Markdown")
+        else:
+            bot.reply_to(message, "⚠️ Bu kullanıcı zaten engelli değil.")
+    else:
+        bot.reply_to(message, "❌ Geçersiz kullanıcı veya ID.")
 
-  bot.answer_callback_query(call.id, "✅ Siparişiniz alındı!")
-  text = (
-      f"🎉 **Siparişiniz Başarıyla Oluşturuldu!**\n\n"
-      f"🎁 **Seçilen Ürün:** {prod_name}\n"
-      f"💰 **Ödenen Tutar:** `{price} TL`\n"
-      f"💎 **Kalan Bakiye:** `{user_balances[user_id]} TL`\n\n"
-      "Hizmetiniz en kısa sürede işleme alınacaktır. Bizi tercih ettiğiniz için teşekkürler! ⭐"
-  )
-  send_or_edit_msg(call, text, reply_markup=markup)
+@bot.message_handler(commands=['start'])
+def send_start(message):
+    user_id = message.from_user.id
+    if user_id in engellenenler:
+        bot.reply_to(message, "❌ Botu kullanmanız engellenmiştir.")
+        return
+        
+    if not kullanici_kanalda_mi(user_id):
+        kanal_kontrol_mesaji(message.chat.id)
+        return
+    
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
+        
+    sent = bot.send_message(message.chat.id, "✨ Lütfen bir işlem seçin:")
+    kullanici_verileri[user_id] = {"aktif_mesaj_id": sent.message_id}
+    ana_menu_gonder(message.chat.id, sent.message_id)
 
+def ana_menu_gonder(chat_id, message_id):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    
+    butonlar = [
+        types.InlineKeyboardButton("🔍 TC SORGU", callback_data="menu_tc"),
+        types.InlineKeyboardButton("⭐ TC PRO", callback_data="menu_tcpro"),
+        types.InlineKeyboardButton("📝 AD SOYAD", callback_data="menu_adsoyad"),
+        types.InlineKeyboardButton("👨‍👩‍👧‍👦 AİLE", callback_data="menu_aile"),
+        types.InlineKeyboardButton("⭐ AİLE PRO", callback_data="menu_ailepro"),
+        types.InlineKeyboardButton("🌳 SÜLALE", callback_data="menu_sulale"),
+        types.InlineKeyboardButton("📱 TC'DEN GSM", callback_data="menu_tcgsm"),
+        types.InlineKeyboardButton("📞 GSM'DEN TC", callback_data="menu_gsmtc"),
+        types.InlineKeyboardButton("📚 E-OKUL", callback_data="menu_eokul"),
+        types.InlineKeyboardButton("🏠 ADRES", callback_data="menu_adres"),
+        types.InlineKeyboardButton("📜 TAPU", callback_data="menu_tapu"),
+        types.InlineKeyboardButton("🗺️ ADA PARSEL", callback_data="menu_adaparsel")
+    ]
+    
+    markup.add(*butonlar)
+    baslik = "✨ Lütfen bir işlem seçin:"
 
-print("🚀 Bot bakiye düşme sistemiyle aktif!")
+    try:
+        bot.edit_message_text(baslik, chat_id, message_id, reply_markup=markup)
+    except Exception:
+        sent = bot.send_message(chat_id, baslik, reply_markup=markup)
+        if chat_id in kullanici_verileri:
+            kullanici_verileri[chat_id]["aktif_mesaj_id"] = sent.message_id
+
+@bot.callback_query_handler(func=lambda call: call.data == "kontrol_et")
+def callback_kontrol(call):
+    user_id = call.from_user.id
+    if user_id in engellenenler:
+        bot.answer_callback_query(call.id, "Botu kullanmanız engellenmiştir.", show_alert=True)
+        return
+        
+    if kullanici_kanalda_mi(user_id):
+        bot.answer_callback_query(call.id, "✅ Kanal katılımınız onaylandı!")
+        ana_menu_gonder(call.message.chat.id, call.message.message_id)
+    else:
+        bot.answer_callback_query(call.id, "❌ Henüz kanalımıza katıldığınızı tespit edemedim!", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == "iptal")
+def callback_iptal(call):
+    bot.answer_callback_query(call.id, "❌ İşlem iptal edildi.")
+    ana_menu_gonder(call.message.chat.id, call.message.message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("sayfa_"))
+def callback_sayfa_degis(call):
+    user_id = call.from_user.id
+    if user_id in engellenenler: return
+    if user_id not in kullanici_verileri or "sonuclar" not in kullanici_verileri[user_id]:
+        bot.answer_callback_query(call.id, "❌ Süre aşımı veya sonuç bulunamadı!", show_alert=True)
+        return
+    
+    yeni_sayfa = int(call.data.split("_")[1])
+    kullanici_verileri[user_id]["aktif_sayfa"] = yeni_sayfa
+    sonuclari_goster(call.message.chat.id, call.message.message_id, user_id)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "txt_olarak_gonder")
+def callback_txt_gonder(call):
+    user_id = call.from_user.id
+    if user_id in engellenenler: return
+    if user_id not in kullanici_verileri or "sonuclar" not in kullanici_verileri[user_id]:
+        bot.answer_callback_query(call.id, "❌ Sonuçlar bulunamadı!", show_alert=True)
+        return
+    
+    sonuclar = kullanici_verileri[user_id]["sonuclar"]
+    chat_id = call.message.chat.id
+    
+    txt_icerik = ""
+    for idx, sonuc in enumerate(sonuclar[:5000], 1):
+        txt_icerik += f"👤 KİŞİ #{idx}\n{sonuc}\n\n{'='*50}\n"
+    
+    dosya = io.BytesIO(txt_icerik.encode('utf-8'))
+    dosya.name = "sorgu_sonuclari.txt"
+    
+    bot.send_document(chat_id, dosya, caption=f"📊 Toplam {len(sonuclar)} kayıt")
+    ana_menu_gonder(chat_id, call.message.message_id)
+
+def sonuclari_goster(chat_id, message_id, user_id):
+    veri = kullanici_verileri.get(user_id, {})
+    sonuclar = veri.get("sonuclar", [])
+    sayfa = veri.get("aktif_sayfa", 0)
+    toplam = len(sonuclar)
+    
+    if not sonuclar:
+        return
+
+    sonuc_metni = sonuclar[sayfa]
+    baslik = f"📄 Sonuçlar — Sayfa {sayfa + 1}/{toplam} ({toplam} kayıt)\n\n👤 KİŞİ #{sayfa + 1}\n{sonuc_metni}"
+    
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    
+    butonlar = []
+    if sayfa > 0:
+        butonlar.append(types.InlineKeyboardButton("◀️ Önceki", callback_data=f"sayfa_{sayfa - 1}"))
+    if sayfa < toplam - 1:
+        butonlar.append(types.InlineKeyboardButton("Sonraki ▶️", callback_data=f"sayfa_{sayfa + 1}"))
+        
+    if butonlar:
+        markup.row(*butonlar)
+        
+    btn_txt = types.InlineKeyboardButton("📄 Tümünü TXT İndir", callback_data="txt_olarak_gonder")
+    btn_iptal = types.InlineKeyboardButton("❌ Kapat / Ana Menü", callback_data="iptal")
+    markup.add(btn_txt, btn_iptal)
+    
+    try:
+        bot.edit_message_text(baslik, chat_id, message_id, reply_markup=markup)
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("menu_"))
+def callback_menu(call):
+    user_id = call.from_user.id
+    if user_id in engellenenler:
+        bot.answer_callback_query(call.id, "Botu kullanmanız engellenmiştir.", show_alert=True)
+        return
+        
+    if not kullanici_kanalda_mi(user_id):
+        bot.answer_callback_query(call.id, "Önce kanala katılmalısın!", show_alert=True)
+        return
+    
+    islem = call.data.replace("menu_", "")
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("❌ İPTAL", callback_data="iptal"))
+
+    msg_id = call.message.message_id
+    chat_id = call.message.chat.id
+
+    if user_id not in kullanici_verileri:
+        kullanici_verileri[user_id] = {}
+    kullanici_verileri[user_id]["aktif_mesaj_id"] = msg_id
+    kullanici_verileri[user_id]["islem"] = islem
+
+    if islem == "adsoyad":
+        bot.edit_message_text("✏️ Lütfen **AD** giriniz:", chat_id, msg_id, reply_markup=markup, parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(chat_id, ad_girildi_islem)
+    elif islem == "adaparsel":
+        bot.edit_message_text("✏️ Lütfen **İL** giriniz:", chat_id, msg_id, reply_markup=markup, parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(chat_id, adaparsel_il_girildi)
+    else:
+        ipucu = "TC Kimlik"
+        if islem == "tcgsm": ipucu = "TC Kimlik"
+        elif islem == "gsmtc": ipucu = "GSM Numarası (Örn: 5550000000)"
+        
+        bot.edit_message_text(f"✏️ Lütfen **{ipucu}** giriniz:", chat_id, msg_id, reply_markup=markup, parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(chat_id, tekli_parametre_sorgula)
+
+def ad_girildi_islem(message):
+    if message.text and message.text.startswith("/"): return
+    user_id = message.from_user.id
+    if user_id in engellenenler: return
+    chat_id = message.chat.id
+    ad = message.text.strip()
+    
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+
+    if user_id not in kullanici_verileri: kullanici_verileri[user_id] = {}
+    kullanici_verileri[user_id]["ad"] = ad
+    
+    msg_id = kullanici_verileri[user_id].get("aktif_mesaj_id")
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("❌ İPTAL", callback_data="iptal"))
+    
+    text = f"✏️ '{ad}' için **SOYAD** giriniz:"
+    bot.edit_message_text(text, chat_id, msg_id, reply_markup=markup, parse_mode="Markdown")
+    bot.register_next_step_handler_by_chat_id(chat_id, soyad_girildi_islem)
+
+def soyad_girildi_islem(message):
+    if message.text and message.text.startswith("/"): return
+    user_id = message.from_user.id
+    if user_id in engellenenler: return
+    chat_id = message.chat.id
+    soyad = message.text.strip()
+    
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+
+    veri = kullanici_verileri.get(user_id, {})
+    ad = quote(veri.get("ad", ""))
+    soyad_en = quote(soyad)
+    
+    url = f"https://apiv2.ajaxsystems.fun/adsoyad.php?ad={ad}&soyad={soyad_en}"
+    api_sorgu_calistir(chat_id, url, user_id)
+
+def adaparsel_il_girildi(message):
+    if message.text and message.text.startswith("/"): return
+    user_id = message.from_user.id
+    if user_id in engellenenler: return
+    chat_id = message.chat.id
+    il = message.text.strip()
+    
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+
+    if user_id not in kullanici_verileri: kullanici_verileri[user_id] = {}
+    kullanici_verileri[user_id]["il"] = il
+    
+    msg_id = kullanici_verileri[user_id].get("aktif_mesaj_id")
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("❌ İPTAL", callback_data="iptal"))
+    
+    bot.edit_message_text(f"✏️ '{il}' için **İLÇE** giriniz:", chat_id, msg_id, reply_markup=markup, parse_mode="Markdown")
+    bot.register_next_step_handler_by_chat_id(chat_id, adaparsel_ilce_girildi)
+
+def adaparsel_ilce_girildi(message):
+    if message.text and message.text.startswith("/"): return
+    user_id = message.from_user.id
+    if user_id in engellenenler: return
+    chat_id = message.chat.id
+    ilce = message.text.strip()
+    
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+
+    veri = kullanici_verileri.get(user_id, {})
+    il = quote(veri.get("il", ""))
+    ilce_en = quote(ilce)
+    
+    url = f"https://apiv2.ajaxsystems.fun/adaparsel.php?il={il}&ilce={ilce_en}"
+    api_sorgu_calistir(chat_id, url, user_id)
+
+def tekli_parametre_sorgula(message):
+    if message.text and message.text.startswith("/"): return
+    user_id = message.from_user.id
+    if user_id in engellenenler: return
+    chat_id = message.chat.id
+    param = message.text.strip()
+    
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+
+    veri = kullanici_verileri.get(user_id, {})
+    islem = veri.get("islem", "tc")
+    en_param = quote(param)
+    
+    urls = {
+        "tc": f"https://apiv2.ajaxsystems.fun/tc.php?tc={en_param}",
+        "tcpro": f"https://apiv2.ajaxsystems.fun/tcpro.php?tc={en_param}",
+        "aile": f"https://apiv2.ajaxsystems.fun/aile.php?tc={en_param}",
+        "ailepro": f"https://apiv2.ajaxsystems.fun/ailepro.php?tc={en_param}",
+        "sulale": f"https://apiv2.ajaxsystems.fun/sulale.php?tc={en_param}",
+        "tcgsm": f"https://apiv2.ajaxsystems.fun/tcgsm.php?tc={en_param}",
+        "gsmtc": f"https://apiv2.ajaxsystems.fun/gsmtc.php?gsm={en_param}&auth=fire",
+        "eokul": f"https://apiv2.ajaxsystems.fun/eokul.php?tc={en_param}",
+        "adres": f"https://apiv2.ajaxsystems.fun/adres.php?tc={en_param}",
+        "tapu": f"https://apiv2.ajaxsystems.fun/tapu.php?tc={en_param}"
+    }
+
+    url = urls.get(islem)
+    if not url: return
+    api_sorgu_calistir(chat_id, url, user_id)
+
+def api_sorgu_calistir(chat_id, url, user_id):
+    msg_id = kullanici_verileri.get(user_id, {}).get("aktif_mesaj_id")
+    
+    if msg_id:
+        try: bot.edit_message_text("🔍 Aranıyor, lütfen bekleyin...", chat_id, msg_id)
+        except: pass
+
+    try:
+        yanit = requests.get(url, timeout=30)
+        
+        if yanit.status_code == 200:
+            try:
+                jdata = yanit.json()
+                gercek_veriler = []
+                
+                if isinstance(jdata, dict):
+                    # API yanıtındaki iç nesneleri yakalama
+                    if "data" in jdata and jdata["data"]:
+                        res = jdata["data"]
+                    elif "results" in jdata and jdata["results"]:
+                        res = jdata["results"]
+                    elif "result" in jdata and jdata["result"]:
+                        res = jdata["result"]
+                    else:
+                        res = jdata
+
+                    if isinstance(res, list):
+                        gercek_veriler = res
+                    elif isinstance(res, dict):
+                        gercek_veriler = [res]
+                    else:
+                        gercek_veriler = [jdata]
+                elif isinstance(jdata, list):
+                    gercek_veriler = jdata
+            except Exception as e:
+                gercek_veriler = []
+
+            if not gercek_veriler:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("🔙 Ana Menüye Dön", callback_data="iptal"))
+                if msg_id: bot.edit_message_text("❌ Kayıt bulunamadı.", chat_id, msg_id, reply_markup=markup)
+                return
+            
+            formatted_results = []
+            for kayit in gercek_veriler:
+                if isinstance(kayit, dict):
+                    metin = ""
+                    for k, v in kayit.items():
+                        # Sadece sistem/durum başlıklarını gizliyoruz
+                        if k.lower() in ["status", "success", "developer", "version", "message"]: 
+                            continue
+                        
+                        if isinstance(v, list): 
+                            v_str = ", ".join(map(str, v))
+                        elif v is None or v == "": 
+                            v_str = "YOK"
+                        else: 
+                            v_str = str(v)
+                        
+                        metin += f"├─ {k.upper()}: {v_str}\n"
+                    
+                    if metin.strip():
+                        metin += "├─ DEVELOPER: @lanetliymis\n└─ VERSION: 4.0"
+                        formatted_results.append(metin.strip())
+                else:
+                    formatted_results.append(f"├─ SONUÇ: {str(kayit)}\n├─ DEVELOPER: @lanetliymis\n└─ VERSION: 4.0")
+            
+            if not formatted_results:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("🔙 Ana Menüye Dön", callback_data="iptal"))
+                if msg_id: bot.edit_message_text("❌ Kayıt bulunamadı.", chat_id, msg_id, reply_markup=markup)
+                return
+
+            kullanici_verileri[user_id]["sonuclar"] = formatted_results
+            kullanici_verileri[user_id]["aktif_sayfa"] = 0
+            
+            sonuclari_goster(chat_id, msg_id, user_id)
+            
+        else:
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔙 Ana Menüye Dön", callback_data="iptal"))
+            if msg_id: bot.edit_message_text(f"❌ Sunucu Hatası (Kod: {yanit.status_code})", chat_id, msg_id, reply_markup=markup)
+    except Exception as e:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Ana Menüye Dön", callback_data="iptal"))
+        if msg_id: bot.edit_message_text(f"⚠️ Bağlantı Hatası: {e}", chat_id, msg_id, reply_markup=markup)
+
+print("Panel botu aktif ve çalışıyor...")
 bot.infinity_polling()
