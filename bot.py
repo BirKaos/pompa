@@ -505,4 +505,4 @@ def api_sorgu_calistir(chat_id, url, user_id, islem_adi, aranan_deger):
                         gercek_veriler = [res]
                     else:
                         gercek_veriler = [jdata]
-                elif isinstance
+                elif isinstance:
